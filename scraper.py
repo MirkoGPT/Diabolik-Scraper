@@ -1,3 +1,9 @@
+"""
+This script is used to scrape a website for comic book information. The user provides a starting URL for the scrape, 
+the series name, and a directory to save the output. The script scrapes the website for relevant information, 
+saves it in a CSV file, and downloads cover images.
+"""
+
 import csv
 import os
 from bs4 import BeautifulSoup
