@@ -6,9 +6,10 @@ saves it in a CSV file, and downloads cover images.
 
 import csv
 import os
-from bs4 import BeautifulSoup
 import requests
 import dateparser
+import logging
+from bs4 import BeautifulSoup
 from PIL import Image
 from io import BytesIO
 from unidecode import unidecode
@@ -26,77 +27,115 @@ if not path:
 series_dir = os.path.join(path, series, 'Covers')
 os.makedirs(series_dir, exist_ok=True)
 
-# Send a GET request to the main page
-response = requests.get(start_url)
+# Setup logging
+logging.basicConfig(filename=os.path.join(path, series, 'error_log.txt'), level=logging.ERROR)
 
-# Parse the HTML content of the main page with BeautifulSoup
-soup = BeautifulSoup(response.content, 'html.parser')
+# List to store errors to be displayed at the end of the execution
+error_list = []
 
-# Find all div elements with the class 'item-element'
-item_elements = soup.find_all('div', class_='item-element')
+try:
+    # Send a GET request to the main page
+    response = requests.get(start_url)
+    response.raise_for_status()
 
-# Open a CSV file in write mode in the series directory
-with open(os.path.join(path, series, 'output.csv'), 'w', newline='', encoding='utf-8-sig') as file:
-    writer = csv.writer(file)
-    # Write the header row
-    writer.writerow(['Title', 'Plot', 'Date', 'Issue', 'Series', 'Publisher'])
+    # Parse the HTML content of the main page with BeautifulSoup
+    soup = BeautifulSoup(response.content, 'html.parser')
 
-    for item_element in item_elements:
-        project_info = item_element.find('div', class_='project-info')
-        if project_info:
-            title = project_info.find('h2')
-            if title:
-                # Remove leading and trailing spaces from the title
-                title_text = title.get_text().strip()
+    # Find all div elements with the class 'item-element'
+    item_elements = soup.find_all('div', class_='item-element')
 
-                # Replace spaces with hyphens, remove apostrophes, and remove accents from the title using unidecode
-                url_title = unidecode(title_text).replace(' ', '-').replace('\'', '')
+    # Open a CSV file in write mode in the series directory
+    with open(os.path.join(path, series, 'output.csv'), 'w', newline='', encoding='utf-8-sig') as file:
+        writer = csv.writer(file)
+        # Write the header row
+        writer.writerow(['Title', 'Plot', 'Date', 'Issue', 'Series', 'Publisher'])
 
-                # Construct the URL for the title's webpage
-                url = f"https://www.diabolik.it/commerce/prodotto/{url_title}"
+        for item_element in item_elements:
+            project_info = item_element.find('div', class_='project-info')
+            if project_info:
+                title = project_info.find('h2')
+                if title:
+                    # Remove leading and trailing spaces from the title
+                    title_text = title.get_text().strip()
 
-                # Send a GET request to the title's webpage
-                response = requests.get(url)
+                    # Replace spaces with hyphens, remove apostrophes, and remove accents from the title using unidecode
+                    url_title = unidecode(title_text).replace(' ', '-').replace('\'', '')
 
-                # Parse the HTML content of the title's webpage with BeautifulSoup
-                soup = BeautifulSoup(response.content, 'html.parser')
+                    # Construct the URL for the title's webpage
+                    url = f"https://www.diabolik.it/commerce/prodotto/{url_title}"
 
-                # Extract the plot, issue, and date from the webpage
-                plot_info = soup.find('div', class_='price-group').find_next_sibling('p')
-                date_info = soup.find('div', class_='footer-item-right').find('ul').find('li')
-                issue_info = soup.find('div', class_='description-content').find('p')
+                    # Send a GET request to the title's webpage
+                    response = requests.get(url)
 
-                # Ensure that plot_info, date_info, and issue_info are not None before extracting their text
-                if plot_info and date_info and issue_info:
-                    plot_text = plot_info.get_text().strip().replace('"', '')
+                    # Parse the HTML content of the title's webpage with BeautifulSoup
+                    soup = BeautifulSoup(response.content, 'html.parser')
 
-                    # Extract issue number
-                    issue_text = issue_info.find('b').next_sibling.strip()
+                    # Extract the plot, issue, and date from the webpage
+                    plot_info = soup.find('div', class_='price-group').find_next_sibling('p')
+                    date_info = soup.find('div', class_='footer-item-right').find('ul').find('li')
+                    issue_info = soup.find('div', class_='description-content').find('p')
 
-                    # Convert the Italian month name to a month number
-                    date = dateparser.parse(date_info.get_text(), languages=['it'])
-                    formatted_date = date.strftime('%b %Y')
+                    # Ensure that plot_info, date_info, and issue_info are not None before extracting their text
+                    if plot_info and date_info and issue_info:
+                        plot_text = plot_info.get_text().strip().replace('"', '')
 
-                    # Write the data to the CSV file
-                    writer.writerow([title_text, plot_text, formatted_date, issue_text, series, 'Astorina'])
+                        # Extract issue number
+                        issue_text = issue_info.find('b').next_sibling.strip()
 
-                    # Find the image URLs in the carousel
-                    images = soup.select('.port-details-thumb-item img')
+                        # Convert the Italian month name to a month number
+                        date = dateparser.parse(date_info.get_text(), languages=['it'])
+                        formatted_date = date.strftime('%b %Y')
 
-                    # Extract unique image URLs
-                    unique_image_urls = list(set([img['src'] for img in images]))
+                        # Write the data to the CSV file
+                        writer.writerow([title_text, plot_text, formatted_date, issue_text, series, 'Astorina'])
 
-                    # Download images
-                    for image_url in unique_image_urls:
-                        # Construct image URL
-                        response = requests.get(image_url, stream=True)
-                        if response.status_code == 200:
-                            # The image URL was accessible, open it with PIL
-                            img = Image.open(BytesIO(response.content))
+                        # Find the image URLs in the carousel
+                        images = soup.select('.port-details-thumb-item img')
 
-                            # Only save the image if it's the correct size
-                            if img.size == (603, 853):
-                                image_suffix = image_url.split('/')[-1]  # Extract the last part of the URL as the image suffix
-                                with open(os.path.join(series_dir, f'{issue_text}_{image_suffix}'), 'wb') as image_file:
-                                    for chunk in response.iter_content(chunk_size=128):
-                                        image_file.write(chunk)
+                        # Extract unique image URLs
+                        unique_image_urls = list(set([img['src'] for img in images]))
+
+                        # Download images
+                        for image_url in unique_image_urls:
+                            try:
+                                # Construct image URL
+                                response = requests.get(image_url, stream=True)
+                                response.raise_for_status()
+
+                                # The image URL was accessible, open it with PIL
+                                img = Image.open(BytesIO(response.content))
+
+                                # Only save the image if it's the correct size
+                                if img.size == (603, 853):
+                                    image_suffix = image_url.split('/')[-1]  # Extract the last part of the URL as the image suffix
+                                    with open(os.path.join(series_dir, f'{issue_text}_{image_suffix}'), 'wb') as image_file:
+                                        for chunk in response.iter_content(chunk_size=128):
+                                            image_file.write(chunk)
+                            except requests.exceptions.HTTPError as err:
+                                error_message = f"HTTP Error occurred while downloading image: {err}"
+                                logging.error(error_message)
+                                error_list.append(error_message)
+                                print(error_message)
+                            except requests.exceptions.RequestException as err:
+                                error_message = f"Error occurred while downloading image: {err}"
+                                logging.error(error_message)
+                                error_list.append(error_message)
+                                print(error_message)
+
+except requests.exceptions.HTTPError as err:
+    error_message = f"HTTP Error occurred: {err}"
+    logging.error(error_message)
+    error_list.append(error_message)
+    print(error_message)
+except requests.exceptions.RequestException as err:
+    error_message = f"Error occurred: {err}"
+    logging.error(error_message)
+    error_list.append(error_message)
+    print(error_message)
+
+if error_list:
+    print("\nErrors occurred during the execution of the script:")
+    for error in error_list:
+        print(error)
+else:
+    print("\nScript executed without errors.")

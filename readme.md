@@ -38,3 +38,7 @@ pip install beautifulsoup4 requests dateparser pillow unidecode
 3. Run the script in a Python environment where all the prerequisites are installed.
 4. When prompted, input the initial link to start scraping from (the one you copied in step 2), the name of the series, and the desired path to save the scraped data and images. If you leave the path empty, the data and images will be saved in the current directory.
 5. The script will start scraping the data and downloading the images. Upon completion, you can find the scraped data in a CSV file and the images in a 'Covers' subdirectory at the specified path.
+
+## License
+
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. This means you are free to copy, distribute, and modify the script, but you must attribute the original script to this repository, you can't use it for commercial purposes, and if you modify it, you must distribute your contributions under the same license. See the `LICENSE` file for more details.
