@@ -9,133 +9,149 @@ import os
 import requests
 import dateparser
 import logging
+import re
 from bs4 import BeautifulSoup
 from PIL import Image
 from io import BytesIO
 from unidecode import unidecode
 
-# Ask the user for the initial link, the series and the desired path
-start_url = input("Please enter the initial link where to start the scraping from: ")
-series = input("Please specify the series: ")
-path = input("Please specify the full path where you want to save the folder (Leave empty to save in the current directory): ")
+def get_user_input():
+    start_url = input("Please enter the initial link where to start the scraping from: ")
+    series = input("Please specify the series: ")
+    path = input("Please specify the full path where you want to save the folder (Leave empty to save in the current directory): ")
+    if not path:
+        path = os.getcwd()
+    return start_url, series, path
 
-# If path is empty, set it to the current directory
-if not path:
-    path = os.getcwd()
+def setup_directories_and_logging(path, series):
+    series_dir = os.path.join(path, series, 'Covers')
+    os.makedirs(series_dir, exist_ok=True)
+    logging.basicConfig(filename=os.path.join(path, series, 'error_log.txt'), level=logging.ERROR)
+    return series_dir
 
-# Create directories for the series and covers if they don't exist
-series_dir = os.path.join(path, series, 'Covers')
-os.makedirs(series_dir, exist_ok=True)
+def scrape_and_write_data(start_url, series, path, series_dir):
+    error_list = []
+    try:
+        response = requests.get(start_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        item_elements = soup.find_all('div', class_='item-element')
 
-# Setup logging
-logging.basicConfig(filename=os.path.join(path, series, 'error_log.txt'), level=logging.ERROR)
+        with open(os.path.join(path, series, 'output.csv'), 'w', newline='', encoding='utf-8-sig') as file:
+            writer = csv.writer(file)
+            writer.writerow(['Title', 'Plot', 'Date', 'Issue', 'Series', 'Publisher'])
 
-# List to store errors to be displayed at the end of the execution
-error_list = []
+            for item_element in item_elements:
+                try:
+                    process_item_element(item_element, writer, series, series_dir)
+                except Exception as e:
+                    log_and_append_error(error_list, f"Unexpected error occurred while processing item element: {e}")
 
-try:
-    # Send a GET request to the main page
-    response = requests.get(start_url)
-    response.raise_for_status()
+    except requests.exceptions.RequestException as err:
+        log_and_append_error(error_list, f"Error occurred: {err}")
 
-    # Parse the HTML content of the main page with BeautifulSoup
-    soup = BeautifulSoup(response.content, 'html.parser')
+    return error_list
 
-    # Find all div elements with the class 'item-element'
-    item_elements = soup.find_all('div', class_='item-element')
+def process_item_element(item_element, writer, series, series_dir):
+    project_info = item_element.find('div', class_='project-info')
+    if project_info:
+        url = item_element.find('figure').find('a')['href']
+        title = project_info.find('h2')
+        if title:
+            # Here we split the title_text string by the dash and strip leading and trailing whitespaces.
+            # If there's no dash in the string, it will return the whole string.
+            title_text = title.get_text().strip().split(' - ', 1)[-1]
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"}
+            response = requests.get(url, headers=headers)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            write_data(soup, title_text, writer, series, series_dir)
 
-    # Open a CSV file in write mode in the series directory
-    with open(os.path.join(path, series, 'output.csv'), 'w', newline='', encoding='utf-8-sig') as file:
-        writer = csv.writer(file)
-        # Write the header row
-        writer.writerow(['Title', 'Plot', 'Date', 'Issue', 'Series', 'Publisher'])
+def write_data(soup, title_text, writer, series, series_dir):
+    plot_text, date_info, issue_info, title_text, price_text = extract_data(soup)
+    writer.writerow([title_text, plot_text, date_info, issue_info, series, 'Astorina'])
+    
+    # Find the product-thumb-area div
+    product_thumb_area = soup.find('div', class_='product-thumb-area')
+    if product_thumb_area is not None:
+        # Find all figure elements within this div
+        image_elements = product_thumb_area.find_all('figure', class_='port-details-thumb-item')
+    else:
+        image_elements = []
+    
+    pattern = re.compile(r'https://www\.diabolik\.it/uploads/image_crop/.*\.jpg')
+    unique_image_urls = list(set([img.find('img')['src'] for img in image_elements if img.find('img') and pattern.match(img.find('img')['src'])]))
+    download_images(unique_image_urls, series_dir, issue_info)
 
-        for item_element in item_elements:
-            project_info = item_element.find('div', class_='project-info')
-            if project_info:
-                title = project_info.find('h2')
-                if title:
-                    # Remove leading and trailing spaces from the title
-                    title_text = title.get_text().strip()
 
-                    # Replace spaces with hyphens, remove apostrophes, and remove accents from the title using unidecode
-                    url_title = unidecode(title_text).replace(' ', '-').replace('\'', '')
+def extract_data(soup):
+    # Title
+    title_section = soup.find("h1")
+    title_text = title_section.get_text(strip=True) if title_section else "Title not available"
 
-                    # Construct the URL for the title's webpage
-                    url = f"https://www.diabolik.it/commerce/prodotto/{url_title}"
+    # Price
+    price_section = soup.find("span", class_="price")
+    price_text = price_section.get_text(strip=True) if price_section else "Price not available"
+    
+    # Description/Plot
+    desc_section = soup.find("div", class_="prod-details-info-content")
+    plot_text = desc_section.p.get_text(strip=True).replace('"', '').replace("'", "") if desc_section and desc_section.p else "Plot information not available"
 
-                    # Send a GET request to the title's webpage
-                    response = requests.get(url)
+    # Issue Number
+    issue_info = soup.find("div", class_="description-content")
+    if issue_info:
+        issue_text = issue_info.get_text(strip=True)
+        issue_number = re.search(r'Inedito n.\s*(\d+)', issue_text)
+        issue_text = issue_number.group(1) if issue_number else "Issue number not available"
+    else:
+        issue_text = "Issue number not available"
+    
+    # Release Date
+    date_section = soup.find("div", class_="footer-item-right")
+    if date_section:
+        date_info = date_section.get_text(strip=True)
+        formatted_date = dateparser.parse(date_info, languages=['it']).strftime('%b %Y') if date_info else "Date information not available"
+    else:
+        formatted_date = "Date information not available"
 
-                    # Parse the HTML content of the title's webpage with BeautifulSoup
-                    soup = BeautifulSoup(response.content, 'html.parser')
+    return plot_text, formatted_date, issue_text, title_text, price_text
 
-                    # Extract the plot, issue, and date from the webpage
-                    plot_info = soup.find('div', class_='price-group').find_next_sibling('p')
-                    date_info = soup.find('div', class_='footer-item-right').find('ul').find('li')
-                    issue_info = soup.find('div', class_='description-content').find('p')
+def download_images(unique_image_urls, series_dir, issue_info):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+    }
+    for image_url in unique_image_urls:
+        try:
+            logging.info(f"Downloading image: {image_url}")
+            response = requests.get(image_url, stream=True, headers=headers)
+            response.raise_for_status()
+            img = Image.open(BytesIO(response.content))
+            if img.size == (603, 853):
+                image_suffix = image_url.split('/')[-1]
+                with open(os.path.join(series_dir, f'{issue_info}_{image_suffix}'), 'wb') as image_file:
+                    for chunk in response.iter_content(chunk_size=128):
+                        image_file.write(chunk)
+            else:
+                logging.error(f"Image size mismatch: {img.size} for URL: {image_url}")
+        except requests.exceptions.RequestException as err:
+            logging.error(f"Error occurred while downloading image: {err} URL: {image_url}")
+        except Exception as e:
+            logging.error(f"Unexpected error: {e} URL: {image_url}")
 
-                    # Ensure that plot_info, date_info, and issue_info are not None before extracting their text
-                    if plot_info and date_info and issue_info:
-                        plot_text = plot_info.get_text().strip().replace('"', '')
-
-                        # Extract issue number
-                        issue_text = issue_info.find('b').next_sibling.strip()
-
-                        # Convert the Italian month name to a month number
-                        date = dateparser.parse(date_info.get_text(), languages=['it'])
-                        formatted_date = date.strftime('%b %Y')
-
-                        # Write the data to the CSV file
-                        writer.writerow([title_text, plot_text, formatted_date, issue_text, series, 'Astorina'])
-
-                        # Find the image URLs in the carousel
-                        images = soup.select('.port-details-thumb-item img')
-
-                        # Extract unique image URLs
-                        unique_image_urls = list(set([img['src'] for img in images]))
-
-                        # Download images
-                        for image_url in unique_image_urls:
-                            try:
-                                # Construct image URL
-                                response = requests.get(image_url, stream=True)
-                                response.raise_for_status()
-
-                                # The image URL was accessible, open it with PIL
-                                img = Image.open(BytesIO(response.content))
-
-                                # Only save the image if it's the correct size
-                                if img.size == (603, 853):
-                                    image_suffix = image_url.split('/')[-1]  # Extract the last part of the URL as the image suffix
-                                    with open(os.path.join(series_dir, f'{issue_text}_{image_suffix}'), 'wb') as image_file:
-                                        for chunk in response.iter_content(chunk_size=128):
-                                            image_file.write(chunk)
-                            except requests.exceptions.HTTPError as err:
-                                error_message = f"HTTP Error occurred while downloading image: {err}"
-                                logging.error(error_message)
-                                error_list.append(error_message)
-                                print(error_message)
-                            except requests.exceptions.RequestException as err:
-                                error_message = f"Error occurred while downloading image: {err}"
-                                logging.error(error_message)
-                                error_list.append(error_message)
-                                print(error_message)
-
-except requests.exceptions.HTTPError as err:
-    error_message = f"HTTP Error occurred: {err}"
+def log_and_append_error(error_list, error_message):
     logging.error(error_message)
     error_list.append(error_message)
     print(error_message)
-except requests.exceptions.RequestException as err:
-    error_message = f"Error occurred: {err}"
-    logging.error(error_message)
-    error_list.append(error_message)
-    print(error_message)
 
-if error_list:
-    print("\nErrors occurred during the execution of the script:")
-    for error in error_list:
-        print(error)
-else:
-    print("\nScript executed without errors.")
+def main():
+    start_url, series, path = get_user_input()
+    series_dir = setup_directories_and_logging(path, series)
+    error_list = scrape_and_write_data(start_url, series, path, series_dir)
+    if error_list:
+        print("\nErrors occurred during the execution of the script:")
+        for error in error_list:
+            print(error)
+    else:
+        print("\nScript executed without errors.")
+
+if __name__ == "__main__":
+    main()
